@@ -15,7 +15,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><img src="rewind-logo.png" alt="Rewind The Party logo"><div><h1>REWIND <span>BAR</span></h1><small>POS v6.2.0 · standalone</small></div></div>
+  <div class="brand"><img src="rewind-logo.png" alt="Rewind The Party logo"><div><h1>REWIND <span>BAR</span></h1><small>POS v6.3.0 · standalone</small></div></div>
   <div class="top-actions"><span id="indicator" class="pill">Niet ingelogd</span><button id="screenLock" class="small outline" hidden>🔒 Vergrendel</button></div>
 </header>
 <main>
@@ -68,7 +68,8 @@
         <div id="basket" class="basket-lines"></div>
         <div class="receipt-actions"><button id="undo" class="outline">↶ Laatste terug</button><button id="clear" class="danger-outline">Bon wissen</button></div>
         <div class="total"><span>TE PINNEN</span><strong id="total">€ 0,00</strong></div>
-        <div id="checkoutActions"><button id="checkout" class="primary full">PIN · AFREKENEN</button></div>
+        <div id="checkoutActions"><button id="checkout" class="primary full">PIN · AFREKENEN</button><button id="manualPay" class="outline full" hidden>Los pinapparaat (handmatig)</button></div>
+        <div id="sumupWait" hidden><p><b>Wacht op SumUp…</b> Laat de klant betalen in de SumUp-app. Daarna gaat de kassa vanzelf verder.</p><p class="muted" id="sumupHint"></p><button id="sumupOk" class="success full">✓ SumUp toonde “Geslaagd”</button><button id="sumupFail" class="outline full">✕ Mislukt of afgebroken</button></div>
         <div id="confirm" hidden><p>Voer het getoonde bedrag in op het losse pinapparaat. Bevestig pas als de betaling echt is gelukt.</p><button id="paid" class="success full">✓ BETALING GELUKT</button><button id="back" class="outline full">← Terug naar bestelling</button></div>
       </aside>
     </div>
@@ -109,6 +110,8 @@
         <label>Bar van dit toestel<select id="setBar"><option value="1">Bar 1</option><option value="2">Bar 2</option><option value="3">Bar 3</option><option value="4">Bar 4</option></select></label>
         <label>WhatsApp-nummer<input id="setWhatsapp" inputmode="tel" placeholder="+31612345678"></label>
         <label>E-mailadres<input id="setEmail" type="email" placeholder="naam@voorbeeld.nl"></label>
+        <label>Betaalmethode<select id="setPayment"><option value="manual">Los pinapparaat (handmatig bevestigen)</option><option value="sumup">SumUp-app (Tap to Pay of SumUp-lezer)</option></select></label>
+        <div id="sumupFields"><label>SumUp affiliate key<input id="setSumupKey" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="uit SumUp → Developers → Affiliate keys"></label><label>App-ID bij die affiliate key<input id="setSumupAppId" autocomplete="off" autocapitalize="none" spellcheck="false"></label><p class="muted" id="sumupAppIdHint"></p></div>
         <label>Nieuwe barcode (leeg = ongewijzigd)<input id="setBarCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
         <label>Nieuwe beheerderscode (leeg = ongewijzigd)<input id="setAdminCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
         <button class="primary" type="submit">Instellingen opslaan</button>
@@ -122,7 +125,7 @@
 
 <div id="lockLayer" class="lock-layer" hidden><div class="panel lock-card"><img src="rewind-logo.png" alt="Rewind logo"><h2>Kassa vergrendeld</h2><p>Voer de toegangscode opnieuw in om verder te werken.</p><form id="unlockForm"><input id="unlockCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore required placeholder="Toegangscode"><button class="primary">Ontgrendelen</button></form><p id="unlockError" class="error"></p></div></div>
 <div id="askLayer" class="lock-layer" hidden><div class="panel lock-card ask-card" role="dialog" aria-modal="true"><p id="askText" class="ask-text"></p><input id="askInput" type="text" autocomplete="off" hidden><div class="ask-buttons"><button type="button" id="askCancel" class="outline">Annuleren</button><button type="button" id="askOk" class="primary">OK</button></div></div></div>
-<footer>Rewind Bar POS v6.2.0 · Werkt zonder server · Betalingen altijd op los pinapparaat</footer>
+<footer>Rewind Bar POS v6.3.0 · Werkt zonder server · Betalen via SumUp of los pinapparaat</footer>
 <script src="capacitor.js"></script>
 <script type="module" src="app.js"></script>
 </body>

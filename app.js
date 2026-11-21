@@ -4,6 +4,7 @@ const Cap = window.Capacitor;
 const isNative = Boolean(Cap?.isNativePlatform?.());
 const Share = isNative && Cap?.registerPlugin ? Cap.registerPlugin('Share') : null;
 const Filesystem = isNative && Cap?.registerPlugin ? Cap.registerPlugin('Filesystem') : null;
+const AppPlugin = isNative && Cap?.registerPlugin ? Cap.registerPlugin('App') : null;
 
 const fmt = c => (c / 100).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' });
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,7 +13,7 @@ const nlTime = iso => new Date(iso).toLocaleTimeString('nl-NL', { hour: '2-digit
 const notice = s => { $('notice').textContent = s; };
 
 // ---------- Opslag ----------
-const K = { settings: 'rewind-sa-settings', event: 'rewind-sa-event', archive: 'rewind-sa-archive' };
+const K = { settings: 'rewind-sa-settings', event: 'rewind-sa-event', archive: 'rewind-sa-archive', pending: 'rewind-sa-sumup-pending' };
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 const DEFAULT_PRODUCTS = [['Bier', 300, '🍺'], ['Frisdrank', 250, '🥤'], ['Wijn', 400, '🍷'], ['Water', 200, '💧'], ['Speciaalbier', 450, '🍻'], ['Snack', 350, '🥨']]
@@ -134,7 +135,9 @@ $('loginForm').onsubmit = async e => {
   $('reportTab').hidden = $('adminTab').hidden = role !== 'admin';
   selectView('kassa');
   await refreshSales();
+  restoreSumup();
   renderEverything();
+  if (window.__launchSumup) { const u = window.__launchSumup; window.__launchSumup = null; await handleSumupCallback(u); }
 };
 $('resetDevice').onclick = async () => {
   // Alleen toegestaan zolang er nog niets op dit toestel is verkocht: anders zou iedereen de beheerderscode kunnen omzeilen.
@@ -193,8 +196,12 @@ function renderReceipt() {
   $('lineCount').textContent = lines().reduce((v, p) => v + p.qty, 0) + ' stuks';
   $('total').textContent = fmt(sum());
   $('undo').disabled = blocked() || !history.length;
-  $('clear').disabled = $('checkout').disabled = blocked() || !lines().length;
-  $('checkoutActions').hidden = checkout; $('confirm').hidden = !checkout;
+  $('clear').disabled = $('checkout').disabled = $('manualPay').disabled = blocked() || !lines().length;
+  $('checkout').textContent = sumupOn() ? 'AFREKENEN MET SUMUP' : 'PIN · AFREKENEN';
+  $('manualPay').hidden = !sumupOn();
+  $('checkoutActions').hidden = checkout;
+  $('confirm').hidden = !checkout || Boolean(sumupPending);
+  $('sumupWait').hidden = !sumupPending;
 }
 function renderSummary() {
   const s = totals();
@@ -205,28 +212,107 @@ function renderEverything() { renderQty(); renderCatalog(); renderReceipt(); ren
 
 $('undo').onclick = () => { if (checkout || !history.length) return; cart = history.pop(); renderReceipt(); };
 $('clear').onclick = async () => { if (checkout || !lines().length) return; if (await ask('Hele bestelling wissen?', { okLabel: 'Wissen' })) { history.push({ ...cart }); cart = {}; renderReceipt(); } };
-$('checkout').onclick = () => { if (!lines().length || closed()) return; checkout = true; renderEverything(); };
+// ---------- Afrekenen ----------
+// Betaalwijze: 'manual' = los pinapparaat, zelf bevestigen; 'sumup' = SumUp-app via Payment Switch.
+const sumupOn = () => settings.payment === 'sumup' && Boolean(settings.sumupKey);
+const defaultAppId = () => isNative ? 'nl.rewindtheparty.bar' : location.hostname;
+let sumupPending = null;
+
+$('checkout').onclick = () => {
+  if (!lines().length || closed() || checkout) return;
+  if (sumupOn()) return startSumup();
+  checkout = true; renderEverything();
+};
+$('manualPay').onclick = () => { if (!lines().length || closed() || checkout) return; checkout = true; renderEverything(); };
 $('back').onclick = () => { checkout = false; renderEverything(); };
-$('paid').onclick = async () => {
-  if (busy || !checkout || closed()) return;
+$('paid').onclick = () => recordSale({ method: 'manual' });
+
+async function recordSale(payment) {
+  if (busy || !checkout || closed() || !lines().length) return false;
   busy = true; $('paid').disabled = true;
   const sale = {
     id: crypto.randomUUID(), event_id: evening.id, bar: settings.bar, created_at: new Date().toISOString(),
     total_cents: sum(), items: lines().map(p => ({ product_id: p.id, name: p.name, unit_price_cents: p.price_cents, qty: p.qty })),
-    void_reason: null, voided_at: null,
+    payment, void_reason: null, voided_at: null,
   };
   // Bon direct leegmaken, zodat een snelle volgende tik niet op de oude bon terechtkomt.
   const prevCart = cart, prevHistory = history;
   cart = {}; history = []; checkout = false; chosen = 1; renderEverything();
   try {
     await putSale(sale); sales.push(sale);
-    renderSummary(); notice(`Verkoop ${fmt(sale.total_cents)} opgeslagen.`);
+    renderSummary();
+    notice(`Verkoop ${fmt(sale.total_cents)} opgeslagen${payment.method === 'sumup' ? ' (SumUp' + (payment.tx_code ? ' ' + payment.tx_code : '') + ')' : ''}.`);
+    return true;
   } catch (e) {
     if (!lines().length) { cart = prevCart; history = prevHistory; checkout = true; renderEverything(); }
     notice('LET OP: verkoop NIET opgeslagen! Schrijf deze betaling handmatig op. ' + e.message);
-  }
-  finally { busy = false; $('paid').disabled = false; }
+    return false;
+  } finally { busy = false; $('paid').disabled = false; }
+}
+
+function startSumup() {
+  if (navigator.onLine === false) { notice('Geen internet: betalen via SumUp lukt nu niet. Gebruik "Los pinapparaat" of wacht op verbinding.'); return; }
+  const id = crypto.randomUUID();
+  sumupPending = { id, total_cents: sum(), cart: { ...cart }, event_id: evening.id, started_at: new Date().toISOString() };
+  save(K.pending, sumupPending);
+  checkout = true; renderEverything();
+  $('sumupHint').textContent = '';
+  const cb = isNative ? 'rewindpos://sumup' : location.origin + location.pathname + '?sumup=1';
+  const amount = (sumupPending.total_cents / 100).toFixed(2);
+  const q = new URLSearchParams({
+    'affiliate-key': settings.sumupKey, 'app-id': settings.sumupAppId || defaultAppId(),
+    total: amount, amount, currency: 'EUR', title: `Rewind Bar ${settings.bar}`,
+    'foreign-tx-id': id, 'skip-screen-success': 'true', callback: cb, callbacksuccess: cb, callbackfail: cb,
+  });
+  const url = 'sumupmerchant://pay/1.0?' + q.toString();
+  if (typeof window.__openSumup === 'function') window.__openSumup(url); else window.location.href = url; // haakje voor tests
+  setTimeout(() => {
+    if (sumupPending?.id === id && document.visibilityState === 'visible')
+      $('sumupHint').textContent = 'Opent SumUp niet? Controleer of de SumUp Business-app geïnstalleerd en ingelogd is, of kies Mislukt en reken af met het losse pinapparaat.';
+  }, 3500);
+}
+
+async function finishSumup(txCode, confirmedBy) {
+  const p = sumupPending; if (!p) return;
+  if (p.event_id !== evening.id) { clearSumup(); notice('Deze SumUp-betaling hoort bij een eerdere avond en is niet geboekt. Controleer de SumUp-app.'); return; }
+  if (!lines().length) cart = { ...p.cart };
+  checkout = true;
+  const ok = await recordSale({ method: 'sumup', tx_code: txCode || null, foreign_tx_id: p.id, confirmed: confirmedBy });
+  if (ok) clearSumup();
+}
+function clearSumup() { sumupPending = null; try { localStorage.removeItem(K.pending); } catch { } renderReceipt(); }
+function failSumup(message) {
+  clearSumup(); checkout = false; renderEverything();
+  notice('SumUp-betaling niet gelukt' + (message ? ': ' + message : '') + '. De bon staat er nog; probeer opnieuw of gebruik het losse pinapparaat.');
+}
+async function handleSumupCallback(url) {
+  let q; try { q = new URL(url).searchParams; } catch { return; }
+  if (!q.has('smp-status') && !q.has('foreign-tx-id')) return;
+  if (!sumupPending) sumupPending = load(K.pending, null);
+  if (!sumupPending || q.get('foreign-tx-id') !== sumupPending.id) { notice('Een SumUp-terugmelding hoorde niet bij de open betaling en is genegeerd. Controleer zo nodig de SumUp-app.'); return; }
+  if (!settings || !evening) return;
+  if (!sales.length) await refreshSales();
+  if (q.get('smp-status') === 'success') await finishSumup(q.get('smp-tx-code'), 'sumup');
+  else failSumup(q.get('smp-message') || q.get('smp-status') || 'afgebroken');
+}
+$('sumupOk').onclick = async () => {
+  if (!sumupPending) return;
+  if (!(await ask(`Toonde de SumUp-app “Geslaagd” voor ${fmt(sumupPending.total_cents)}?\n\nBevestig alleen als je dat zeker hebt gezien. Twijfel je, kijk dan in de SumUp-app onder Transacties.`, { okLabel: 'Ja, geslaagd', cancelLabel: 'Terug' }))) return;
+  await finishSumup(null, 'handmatig');
 };
+$('sumupFail').onclick = () => { if (sumupPending) failSumup(''); };
+function restoreSumup() {
+  const p = load(K.pending, null);
+  if (!p || !evening || p.event_id !== evening.id) { if (p) clearSumup(); return; }
+  sumupPending = p; cart = { ...p.cart }; checkout = true;
+  $('sumupHint').textContent = 'Er stond nog een SumUp-betaling open. Kijk in de SumUp-app of die gelukt is en kies hieronder.';
+}
+// Terugmelding van SumUp: Android via de app-link, webversie via de pagina-URL.
+if (AppPlugin) {
+  AppPlugin.addListener('appUrlOpen', e => { if (e?.url?.startsWith('rewindpos://sumup')) handleSumupCallback(e.url); });
+  AppPlugin.getLaunchUrl?.().then(r => { if (r?.url?.startsWith('rewindpos://sumup')) window.__launchSumup = r.url; }).catch(() => { });
+}
+if (!isNative && /[?&](sumup=1|smp-status=)/.test(location.search)) { window.__launchSumup = location.href; window.history.replaceState(null, '', location.pathname); }
 
 // ---------- Rapport ----------
 function totals() {
@@ -237,7 +323,9 @@ function totals() {
     const row = items.get(key) || { product_id: i.product_id, name: i.name, unit_price_cents: i.unit_price_cents, qty: 0, revenue: 0 };
     row.qty += i.qty; row.revenue += i.qty * i.unit_price_cents; items.set(key, row);
   }
+  const viaSumup = valid.filter(s => s.payment?.method === 'sumup');
   return {
+    sumupCount: viaSumup.length, sumupRevenue: viaSumup.reduce((n, s) => n + s.total_cents, 0),
     orders: valid.length, revenue: valid.reduce((n, s) => n + s.total_cents, 0),
     voids: voids.length, voidAmount: voids.reduce((n, s) => n + s.total_cents, 0),
     items: [...items.values()].sort((a, b) => a.name.localeCompare(b.name, 'nl') || a.unit_price_cents - b.unit_price_cents),
@@ -254,6 +342,7 @@ function reportText() {
     `Omzet: ${fmt(t.revenue)}`,
     `Bestellingen: ${t.orders}`,
     `Correcties: ${t.voids}${t.voids ? ` (${fmt(t.voidAmount)} geannuleerd)` : ''}`,
+    ...(t.sumupCount ? [`Via SumUp: ${fmt(t.sumupRevenue)} (${t.sumupCount}×) · los pinapparaat: ${fmt(t.revenue - t.sumupRevenue)} (${t.orders - t.sumupCount}×)`] : []),
     pinLine,
     '',
     'Producten:',
@@ -264,12 +353,12 @@ function renderReport() {
   const t = totals();
   $('reportTitle').textContent = closed() ? `Avond afgesloten · ${nlDate(evening.closed_at)}` : `Deze avond · Bar ${settings.bar}`;
   const pin = evening.terminal_cents;
-  $('stats').innerHTML = `<div class="stat"><small>Omzet na correcties</small><strong>${fmt(t.revenue)}</strong></div><div class="stat"><small>Bestellingen</small><strong>${t.orders}</strong></div><div class="stat"><small>Correcties</small><strong>${t.voids}</strong></div><div class="stat"><small>Pin-eindstand</small><strong>${pin == null ? '—' : fmt(pin)}</strong></div><div class="stat"><small>Verschil kassa−pin</small><strong>${pin == null ? '—' : fmt(t.revenue - pin)}</strong></div>`;
+  $('stats').innerHTML = `<div class="stat"><small>Omzet na correcties</small><strong>${fmt(t.revenue)}</strong></div><div class="stat"><small>Bestellingen</small><strong>${t.orders}</strong></div><div class="stat"><small>Correcties</small><strong>${t.voids}</strong></div>${t.sumupCount ? `<div class="stat"><small>Via SumUp</small><strong>${fmt(t.sumupRevenue)}</strong></div>` : ''}<div class="stat"><small>Pin-eindstand</small><strong>${pin == null ? '—' : fmt(pin)}</strong></div><div class="stat"><small>Verschil kassa−pin</small><strong>${pin == null ? '—' : fmt(t.revenue - pin)}</strong></div>`;
   let html = '<div class="panel"><h3>Productomzet (zonder geannuleerde verkopen)</h3><div class="table-scroll"><table><tr><th>Product</th><th>Prijs</th><th>Aantal</th><th>Omzet</th></tr>';
   for (const i of t.items) html += `<tr><td>${h(i.name)}</td><td>${fmt(i.unit_price_cents)}</td><td>${i.qty}</td><td>${fmt(i.revenue)}</td></tr>`;
   html += '</table></div></div><div class="panel"><h3>Transacties</h3><div class="table-scroll"><table><tr><th>Tijd</th><th>Bedrag</th><th>Producten</th><th>Status</th></tr>';
   for (const s of [...sales].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 100)) {
-    html += `<tr><td>${nlTime(s.created_at)}</td><td>${fmt(s.total_cents)}</td><td><small>${h(s.items.map(i => i.qty + '× ' + i.name).join(', '))}</small></td><td>${s.void_reason ? 'Geannuleerd: ' + h(s.void_reason) : closed() ? 'Geboekt' : `<button class="small danger-outline" data-void="${s.id}">Annuleren</button>`}</td></tr>`;
+    html += `<tr><td>${nlTime(s.created_at)}</td><td>${fmt(s.total_cents)}</td><td><small>${h(s.items.map(i => i.qty + '× ' + i.name).join(', '))}${s.payment?.method === 'sumup' ? '<br>SumUp ' + h(s.payment.tx_code || (s.payment.confirmed === 'handmatig' ? 'handmatig bevestigd' : '')) : ''}</small></td><td>${s.void_reason ? 'Geannuleerd: ' + h(s.void_reason) : closed() ? 'Geboekt' : `<button class="small danger-outline" data-void="${s.id}">Annuleren</button>`}</td></tr>`;
   }
   html += '</table></div></div>';
   $('reportBody').innerHTML = html;
@@ -288,11 +377,13 @@ function renderReport() {
 }
 async function voidSale(id) {
   const s = sales.find(x => x.id === id); if (!s || s.void_reason || closed()) return;
-  const reason = ((await ask(`Verkoop van ${fmt(s.total_cents)} om ${nlTime(s.created_at)} annuleren.\nDit annuleert geen echte pinbetaling. Reden (minstens 5 tekens):`, { okLabel: 'Annuleren bevestigen', cancelLabel: 'Terug', input: true, placeholder: 'Reden, bijv. verkeerd aangeslagen' })) || '').trim();
+  const viaSumup = s.payment?.method === 'sumup';
+  const refundNote = viaSumup ? `Betaald via SumUp${s.payment.tx_code ? ' (transactie ' + s.payment.tx_code + ')' : ''}. Het geld terugbetalen doe je in de SumUp-app onder Transacties.` : 'Dit annuleert geen echte pinbetaling.';
+  const reason = ((await ask(`Verkoop van ${fmt(s.total_cents)} om ${nlTime(s.created_at)} annuleren.\n${refundNote}\nReden (minstens 5 tekens):`, { okLabel: 'Annuleren bevestigen', cancelLabel: 'Terug', input: true, placeholder: 'Reden, bijv. verkeerd aangeslagen' })) || '').trim();
   if (reason.length < 5) { notice(reason ? 'Reden te kort (minstens 5 tekens); niets geannuleerd.' : 'Annuleren afgebroken.'); return; }
   s.void_reason = reason; s.voided_at = new Date().toISOString();
   await putSale(s); renderReport(); renderSummary();
-  notice('Correctie verwerkt. Regel zo nodig apart een terugbetaling via het pinapparaat.');
+  notice(viaSumup ? 'Correctie verwerkt. Vergeet niet de betaling terug te storten in de SumUp-app.' : 'Correctie verwerkt. Regel zo nodig apart een terugbetaling via het pinapparaat.');
 }
 function parseCents(v) { const s = String(v).trim().replace(',', '.'); if (!/^\d+(\.\d{1,2})?$/.test(s)) return null; const n = Math.round(Number(s) * 100); return Number.isSafeInteger(n) && n <= 100000000 ? n : null; }
 $('saveTotal').onclick = () => {
@@ -355,7 +446,7 @@ async function writeCsv(name, rows) {
 }
 const stamp = () => new Date(evening.started_at).toISOString().slice(0, 10);
 const productRows = () => [['Bar', 'Product-ID', 'Naam', 'Prijs (€)', 'Aantal', 'Omzet (€)'], ...totals().items.map(i => [settings.bar, i.product_id, i.name, (i.unit_price_cents / 100).toFixed(2).replace('.', ','), i.qty, (i.revenue / 100).toFixed(2).replace('.', ',')])];
-const transactionRows = () => [['ID', 'Datum/tijd', 'Bar', 'Bedrag (€)', 'Producten', 'Correctiereden'], ...sales.map(s => [s.id, nlDate(s.created_at), s.bar, (s.total_cents / 100).toFixed(2).replace('.', ','), s.items.map(i => i.qty + 'x ' + i.name).join(', '), s.void_reason || ''])];
+const transactionRows = () => [['ID', 'Datum/tijd', 'Bar', 'Bedrag (€)', 'Producten', 'Betaalwijze', 'SumUp-transactie', 'Correctiereden'], ...sales.map(s => [s.id, nlDate(s.created_at), s.bar, (s.total_cents / 100).toFixed(2).replace('.', ','), s.items.map(i => i.qty + 'x ' + i.name).join(', '), s.payment?.method === 'sumup' ? 'SumUp' + (s.payment.confirmed === 'handmatig' ? ' (handmatig bevestigd)' : '') : 'Los pinapparaat', s.payment?.tx_code || '', s.void_reason || ''])];
 async function exportCsv(name, rows) {
   try {
     const out = await writeCsv(name, rows);
@@ -406,7 +497,13 @@ $('productForm').onsubmit = e => {
 function renderSettings() {
   $('setBar').value = settings.bar; $('setWhatsapp').value = settings.whatsapp ? '+' + settings.whatsapp : ''; $('setEmail').value = settings.email || '';
   $('setBarCode').value = $('setAdminCode').value = '';
+  $('setPayment').value = settings.payment || 'manual';
+  $('setSumupKey').value = settings.sumupKey || '';
+  $('setSumupAppId').value = settings.sumupAppId || defaultAppId();
+  $('sumupAppIdHint').textContent = `Maak in je SumUp-account (me.sumup.com → Developers → Affiliate keys) een sleutel aan voor App-ID “${defaultAppId()}” en vul hem hierboven in.`;
+  $('sumupFields').hidden = $('setPayment').value !== 'sumup';
 }
+$('setPayment').onchange = () => { $('sumupFields').hidden = $('setPayment').value !== 'sumup'; };
 $('settingsForm').onsubmit = async e => {
   e.preventDefault();
   const email = $('setEmail').value.trim(), barCode = $('setBarCode').value.trim(), adminCode = $('setAdminCode').value.trim();
@@ -417,9 +514,13 @@ $('settingsForm').onsubmit = async e => {
   if (newBar === newAdmin) return notice('Barcode en beheerderscode moeten verschillen.');
   const bar = Number($('setBar').value);
   if (bar !== settings.bar && sales.length && !closed()) return notice('Wijzig de bar pas na het afsluiten van de avond.');
-  Object.assign(settings, { bar, whatsapp: normalizePhone($('setWhatsapp').value), email, barHash: newBar, adminHash: newAdmin });
+  const payment = $('setPayment').value, sumupKey = $('setSumupKey').value.trim(), sumupAppId = $('setSumupAppId').value.trim() || defaultAppId();
+  if (payment === 'sumup' && !sumupKey) return notice('Vul de SumUp affiliate key in, of kies "Los pinapparaat".');
+  if (sumupPending) return notice('Rond eerst de openstaande SumUp-betaling af.');
+  Object.assign(settings, { bar, whatsapp: normalizePhone($('setWhatsapp').value), email, barHash: newBar, adminHash: newAdmin, payment, sumupKey, sumupAppId });
   save(K.settings, settings); renderSettings();
   $('indicator').textContent = `● Beheerder · Bar ${settings.bar}`; $('barTitle').textContent = `Kassa • Bar ${settings.bar}`;
+  renderReceipt();
   notice('Instellingen opgeslagen.');
 };
 function renderArchive() {
