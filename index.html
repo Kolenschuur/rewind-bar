@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#17121f">
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Rewind Bar">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Rewind Bar POS</title>
+</head>
+<body>
+<header>
+  <div class="brand"><img src="rewind-logo.png" alt="Rewind The Party logo"><div><h1>REWIND <span>BAR</span></h1><small>POS v6.2.0 · standalone</small></div></div>
+  <div class="top-actions"><span id="indicator" class="pill">Niet ingelogd</span><button id="screenLock" class="small outline" hidden>🔒 Vergrendel</button></div>
+</header>
+<main>
+<div id="installHint" class="install-hint" hidden><b>Op de iPhone installeren:</b> tik onderin Safari op <span aria-label="Deel-knop">Deel ⬆︎</span> en kies <b>Zet op beginscherm</b>. Open de kassa daarna altijd via het icoon; dan werkt hij ook offline. <button type="button" id="installHintClose" class="small outline">Begrepen</button></div>
+
+<!-- Eerste start: dit toestel instellen -->
+<section id="setup" class="panel login" hidden>
+  <img class="login-logo" src="rewind-logo.png" alt="Rewind-logo">
+  <h2>Toestel instellen</h2>
+  <p>Eenmalig per toestel. Alle verkopen blijven op dit toestel; er is geen server nodig.</p>
+  <form id="setupForm">
+    <label>Welke bar is dit toestel?
+      <select id="setupBar" required><option value="1">Bar 1</option><option value="2">Bar 2</option><option value="3">Bar 3</option><option value="4">Bar 4</option></select>
+    </label>
+    <label>Barcode (voor barmedewerkers, minstens 4 tekens)<input id="setupBarCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore minlength="4" required></label>
+    <label>Beheerderscode (minstens 6 tekens, anders dan de barcode)<input id="setupAdminCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore minlength="6" required></label>
+    <label>WhatsApp-nummer voor het eindrapport (optioneel)<input id="setupWhatsapp" inputmode="tel" placeholder="+31612345678"></label>
+    <label>E-mailadres voor het eindrapport (optioneel)<input id="setupEmail" type="email" placeholder="naam@voorbeeld.nl"></label>
+    <button class="primary" type="submit">Opslaan en starten</button>
+  </form>
+  <p id="setupError" class="error"></p>
+</section>
+
+<!-- Aanmelden -->
+<section id="login" class="panel login" hidden>
+  <img class="login-logo" src="rewind-logo.png" alt="Rewind-logo">
+  <h2 id="loginTitle">Aanmelden</h2>
+  <p>Barcode voor de kassa, beheerderscode voor dashboard, afsluiten en instellingen.</p>
+  <form id="loginForm"><label>Toegangscode<input id="code" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore required></label><button class="primary" type="submit">Aanmelden</button></form>
+  <p id="loginError" class="error"></p>
+  <button type="button" id="resetDevice" class="small outline">Codes vergeten? Toestel opnieuw instellen</button>
+</section>
+
+<section id="app" hidden>
+  <nav><button data-view="kassa" class="selected">🛒 Kassa</button><button data-view="report" id="reportTab" hidden>📊 Avond &amp; rapport</button><button data-view="admin" id="adminTab" hidden>⚙ Beheer</button><button id="logout" class="outline">Afmelden</button></nav>
+  <div id="notice" role="status" aria-live="polite"></div>
+
+  <!-- KASSA -->
+  <section id="kassa">
+    <div class="section-head"><div><h2 id="barTitle">Kassa</h2><small id="eveningSummary"></small></div></div>
+    <p id="closedBanner" class="closed-banner" hidden>De avond is afgesloten. Nieuwe verkopen zijn geblokkeerd tot de beheerder een nieuwe avond start.</p>
+    <div class="pos-layout">
+      <div class="catalog-area">
+        <div class="quantity-head"><b>AANTAL VOOR VOLGENDE PRODUCT</b><span id="nextQtyLabel">1×</span></div>
+        <div class="qty-grid" id="qtyGrid"></div>
+        <div class="catalog" id="catalog"></div>
+      </div>
+      <aside class="receipt panel">
+        <div class="receipt-head"><h3>Bestelbon</h3><span id="lineCount">0 stuks</span></div>
+        <div id="basket" class="basket-lines"></div>
+        <div class="receipt-actions"><button id="undo" class="outline">↶ Laatste terug</button><button id="clear" class="danger-outline">Bon wissen</button></div>
+        <div class="total"><span>TE PINNEN</span><strong id="total">€ 0,00</strong></div>
+        <div id="checkoutActions"><button id="checkout" class="primary full">PIN · AFREKENEN</button></div>
+        <div id="confirm" hidden><p>Voer het getoonde bedrag in op het losse pinapparaat. Bevestig pas als de betaling echt is gelukt.</p><button id="paid" class="success full">✓ BETALING GELUKT</button><button id="back" class="outline full">← Terug naar bestelling</button></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- AVOND & RAPPORT (beheerder) -->
+  <section id="report" hidden>
+    <div class="section-head"><h2 id="reportTitle">Deze avond</h2><button id="refreshReport" class="outline small">↻ Vernieuwen</button></div>
+    <div class="stats-grid" id="stats"></div>
+    <div id="reportBody"></div>
+    <div class="panel"><h3>Pin-eindstand van dit toestel</h3><p>Neem het dagtotaal over van het losse pinapparaat van deze bar.</p>
+      <div class="edit-grid"><label>Pin-eindstand (€)<input id="terminalTotal" inputmode="decimal" placeholder="0,00"></label><button id="saveTotal" class="outline" type="button">Pin-eindstand opslaan</button></div>
+    </div>
+    <div class="panel"><h3>Export</h3><div class="button-row"><button id="exportSummary" class="outline">CSV producten</button><button id="exportTransactions" class="outline">CSV transacties</button></div></div>
+    <div class="panel" id="closePanel"><h3>Avond afsluiten</h3><p>Blokkeert nieuwe verkopen op dit toestel en maakt het eindrapport. Daarna verstuur je het met één tik via WhatsApp of mail.</p><button id="closeEvening" class="danger-outline">Avond afsluiten en rapport maken</button></div>
+    <div class="panel" id="sendPanel" hidden>
+      <h3>Eindrapport versturen</h3>
+      <p class="muted" id="sendHint"></p>
+      <div class="send-grid"><button id="sendWhatsapp" class="success">WhatsApp</button><button id="sendMail" class="primary">E-mail</button><button id="sendShare" class="outline">Delen… (met CSV)</button></div>
+      <pre id="reportText" class="report-text"></pre>
+      <h3>Nieuwe avond</h3><p>Pas starten nadat het rapport verstuurd is. Het rapport van deze avond blijft bewaard onder Beheer → Eerdere avonden.</p>
+      <button id="newEvening" class="outline">Nieuwe avond starten</button>
+    </div>
+  </section>
+
+  <!-- BEHEER (beheerder) -->
+  <section id="admin" hidden>
+    <h2>⚙ Beheer</h2>
+    <div class="admin-layout">
+      <form id="productForm" class="panel"><h3 id="editorTitle">Nieuw product</h3><input type="hidden" id="productId">
+        <label>Productnaam<input id="productName" required maxlength="70"></label>
+        <label>Verkoopprijs (€)<input id="productPrice" inputmode="decimal" required placeholder="3,00"></label>
+        <label>Emoji<input id="productEmoji" maxlength="12" value="🥤"></label>
+        <label class="check"><input id="productActive" type="checkbox" checked> Actief op kassascherm</label>
+        <div class="button-row"><button class="primary" type="submit">Opslaan</button><button id="cancelEdit" class="outline" type="button">Annuleren</button></div>
+      </form>
+      <form id="settingsForm" class="panel"><h3>Toestel &amp; rapport</h3>
+        <label>Bar van dit toestel<select id="setBar"><option value="1">Bar 1</option><option value="2">Bar 2</option><option value="3">Bar 3</option><option value="4">Bar 4</option></select></label>
+        <label>WhatsApp-nummer<input id="setWhatsapp" inputmode="tel" placeholder="+31612345678"></label>
+        <label>E-mailadres<input id="setEmail" type="email" placeholder="naam@voorbeeld.nl"></label>
+        <label>Nieuwe barcode (leeg = ongewijzigd)<input id="setBarCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+        <label>Nieuwe beheerderscode (leeg = ongewijzigd)<input id="setAdminCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+        <button class="primary" type="submit">Instellingen opslaan</button>
+      </form>
+    </div>
+    <div class="panel"><h3>Producten &amp; prijzen</h3><p class="muted">Prijswijzigingen gelden voor nieuwe verkopen; eerdere verkopen houden hun oorspronkelijke prijs.</p><div class="table-scroll"><table><thead><tr><th>Product</th><th>Prijs</th><th>Status</th><th>Actie</th></tr></thead><tbody id="productList"></tbody></table></div></div>
+    <div class="panel"><h3>Eerdere avonden</h3><div id="archiveList"></div></div>
+  </section>
+</section>
+</main>
+
+<div id="lockLayer" class="lock-layer" hidden><div class="panel lock-card"><img src="rewind-logo.png" alt="Rewind logo"><h2>Kassa vergrendeld</h2><p>Voer de toegangscode opnieuw in om verder te werken.</p><form id="unlockForm"><input id="unlockCode" type="text" class="code-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore required placeholder="Toegangscode"><button class="primary">Ontgrendelen</button></form><p id="unlockError" class="error"></p></div></div>
+<div id="askLayer" class="lock-layer" hidden><div class="panel lock-card ask-card" role="dialog" aria-modal="true"><p id="askText" class="ask-text"></p><input id="askInput" type="text" autocomplete="off" hidden><div class="ask-buttons"><button type="button" id="askCancel" class="outline">Annuleren</button><button type="button" id="askOk" class="primary">OK</button></div></div></div>
+<footer>Rewind Bar POS v6.2.0 · Werkt zonder server · Betalingen altijd op los pinapparaat</footer>
+<script src="capacitor.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
